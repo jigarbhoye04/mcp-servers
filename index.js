@@ -1,72 +1,101 @@
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import { z } from "zod";
+import fetch from 'node-fetch';
+import dotenv from 'dotenv';
+
+// Load environment variables from .env file
+dotenv.config();
+
+const WEATHERAPI_API_KEY = process.env.WEATHERAPI_API_KEY;
+
+if (!WEATHERAPI_API_KEY) {
+    console.warn("Please set WEATHERAPI_API_KEY in your .env file");
+}
 
 const server = new McpServer({
-  name: "jigx-advanced-mcp",
-  version: "1.0.0",
+    name: "advanced-smart-planner-mcp",
+    version: "1.0.0",
 });
 
-
-// Weather information tool with geolocation
+// Tool to get real-time weather information using WeatherAPI
 server.tool(
-  "WeatherInfo",
-  {
-    location: z.string(),
-    unit: z.enum(["celsius", "fahrenheit"]).optional().default("celsius"),
-  },
-  async ({ location, unit }) => {
-    try {
-      // Mock weather data for demonstration purposes
-      const weatherDatabase = {
-        "new york": { temp: 15, condition: "Cloudy", humidity: 65, wind: 12 },
-        "london": { temp: 12, condition: "Rainy", humidity: 80, wind: 15 },
-        "tokyo": { temp: 20, condition: "Sunny", humidity: 50, wind: 8 },
-        "sydney": { temp: 25, condition: "Clear", humidity: 45, wind: 10 },
-        "paris": { temp: 14, condition: "Partly Cloudy", humidity: 60, wind: 11 },
-      };
-      
-      const locationLower = location.toLowerCase();
-      let weather;
-      
-      if (weatherDatabase[locationLower]) {
-        weather = { ...weatherDatabase[locationLower] };
-      } else {
-        // Generate random weather for unknown locations
-        const conditions = ["Sunny", "Cloudy", "Rainy", "Clear", "Stormy", "Snowy", "Foggy"];
-        weather = {
-          temp: Math.floor(Math.random() * 35) - 5, // -5 to 30 degrees
-          condition: conditions[Math.floor(Math.random() * conditions.length)],
-          humidity: Math.floor(Math.random() * 100),
-          wind: Math.floor(Math.random() * 30)
-        };
-      }
-      
-      if (unit === "fahrenheit") {
-        weather.temp = (weather.temp * 9/5) + 32;
-      }
-      
-      // Response according to Claude's expected format
-      return {
-        content: [
-          {
-            type: "text",
-            text: `Current weather in ${location}: ${Math.round(weather.temp)}${unit === "celsius" ? "°C" : "°F"}, ${weather.condition}, Humidity: ${weather.humidity}%, Wind: ${weather.wind} km/h`
-          }
-        ]
-      };
-    } catch (error) {
-      console.error("Error in WeatherInfo:", error);
-      return {
-        content: [
-          {
-            type: "text",
-            text: `Error getting weather for ${location}: ${error.message}`
-          }
-        ]
-      };
+    "RealWeatherInfo",
+    {
+        location: z.string().describe("Location to get weather for"),
+        unit: z.enum(["metric", "imperial"]).optional().default("metric").describe("Units: metric (Celsius), imperial (Fahrenheit)"),
+    },
+    async ({ location, unit }) => {
+        if (!WEATHERAPI_API_KEY) {
+            return { content: [{ type: "text", text: "WeatherAPI key not configured." }] };
+        }
+        const unitParam = unit === "metric" ? "metric" : "imperial"; // WeatherAPI uses metric/imperial
+        try {
+            const response = await fetch(
+                `https://api.weatherapi.com/v1/current.json?key=${WEATHERAPI_API_KEY}&q=${encodeURIComponent(location)}`
+            );
+            const data = await response.json();
+
+            if (data.error) {
+                return { content: [{ type: "text", text: `Could not retrieve weather information for ${location}: ${data.error.message}` }] };
+            }
+
+            const currentWeather = data.current;
+            const temperature = unitParam === "metric" ? currentWeather.temp_c : currentWeather.temp_f;
+            const condition = currentWeather.condition.text;
+            const humidity = currentWeather.humidity;
+            const windSpeed = unitParam === "metric" ? currentWeather.wind_kph : currentWeather.wind_mph;
+            const speedUnit = unitParam === "metric" ? "km/h" : "miles/hour";
+
+            return {
+                content: [
+                    {
+                        type: "text",
+                        text: `Current weather in ${location}: ${temperature}°${unitParam === "metric" ? "C" : "F"}, ${condition}, Humidity: ${humidity}%, Wind: ${windSpeed} ${speedUnit}`,
+                    },
+                ],
+            };
+        } catch (error) {
+            console.error("Error in RealWeatherInfo (WeatherAPI):", error);
+            return { content: [{ type: "text", text: `Error getting weather information for ${location}: ${error.message}` }] };
+        }
     }
-  }
+);
+
+// Smart Event Planner Tool (focuses on weather)
+server.tool(
+    "SmartEventPlanner",
+    {
+        eventName: z.string().describe("Name of the event (e.g., 'Meeting with John')"),
+        eventTime: z.string().describe("Time of the event (e.g., '2:00 PM')"),
+        eventLocation: z.string().describe("Location of the event (e.g., 'Mountain View, CA')"),
+        weatherUnit: z.enum(["metric", "imperial"]).optional().default("metric").describe("Units for weather"),
+    },
+    async ({ eventName, eventTime, eventLocation, weatherUnit }) => {
+        try {
+            const weatherResult = await server.invokeTool("RealWeatherInfo", { location: eventLocation, unit: weatherUnit });
+            const weatherText = weatherResult.content.find(item => item.type === "text")?.text || "Could not retrieve weather information.";
+
+            return {
+                content: [
+                    {
+                        type: "text",
+                        text: `Smart Plan for "${eventName}" at ${eventTime} in ${eventLocation}:\n\nWeather forecast at the location: ${weatherText}`,
+                    },
+                ],
+            };
+        } catch (error) {
+            console.error("Error in SmartEventPlanner:", error);
+            return {
+                content: [
+                    {
+                        type: "text",
+                        text: `Error creating smart plan for "${eventName}": ${error.message}`,
+                    },
+                ],
+            };
+        }
+    }
 );
 
 async function main() {
